@@ -1,0 +1,9 @@
+__pycache__/
+.venv/
+data/
+hyperbox/
+peer_inbox/
+.mypy_cache/
+.pytest_cache/
+*.log
+*.sqlite
