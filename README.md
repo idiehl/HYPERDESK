@@ -15,8 +15,9 @@ session-scoped "hyperbox" directory with controlled permissions.
 5. Use `Sync Rules` to set mode + conflict policy.
 6. Optional: set `HYPERDESK_CONTROL_HOST=0.0.0.0` to accept LAN peers (default).
 7. Use `Connect to Host` on another device to join the session.
+8. Requested files arrive in `hyperbox/inbox` on the client.
 
-## Run peer client (simulated)
+## Run peer client (optional)
 1. Start the host app and click `Start Pairing` to display a code.
 2. In another terminal, run:
    - `python -m hyperdesk.peer --host <HOST_IP> --pair-code 123456`

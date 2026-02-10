@@ -313,3 +313,19 @@ Commands used:
 
 New methods, variables, classes, or modules:
 - None (documentation guidance only)
+
+## 2026-02-06 (UI Transfer Receive)
+Task summary:
+- Added client-side handling for transfer offers to receive files in the UI.
+- Updated documentation to note client inbox location and optional CLI peer.
+
+Relevant files and directories:
+- i:\HYPERDESK\hyperdesk\core\controller.py
+- i:\HYPERDESK\README.md
+- i:\HYPERDESK\internal\log.md
+
+Commands used:
+- None
+
+New methods, variables, classes, or modules:
+- `_receive_transfer_offer()` for UI-based transfer reception.

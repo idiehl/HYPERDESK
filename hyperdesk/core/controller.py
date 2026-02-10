@@ -27,7 +27,7 @@ from hyperdesk.network.control import ControlClient, ControlServer
 from hyperdesk.network.discovery import NetworkDiscovery, ZeroconfService
 from hyperdesk.network.pairing import PairingManager
 from hyperdesk.network.protocol import encode_message
-from hyperdesk.transfer.channel import FileSender
+from hyperdesk.transfer.channel import FileSender, receive_file
 from hyperdesk.transfer.engine import TransferEngine
 
 
@@ -726,6 +726,8 @@ class AppController:
                     self._finalize_request(request_id, mapped_status)
             if job.checksum and job.status == "complete":
                 self._record_peer_checksum(job_id, job.checksum)
+        elif message_type == "TRANSFER_OFFER":
+            await self._receive_transfer_offer(payload)
         elif message_type == "TRANSFER_REQUEST" and self.state.session:
             if not self.state.session.policy.allow_requests:
                 self.state.add_log("Transfer request denied by policy.")
@@ -1039,6 +1041,86 @@ class AppController:
         message = encode_message("TRANSFER_OFFER", payload)
         asyncio.run_coroutine_threadsafe(
             self.control_server.broadcast(message), self._control_loop
+        )
+
+    async def _receive_transfer_offer(self, payload: dict) -> None:
+        if not self.state.session or not self.control_client:
+            return
+        job_id = payload.get("job_id")
+        host = payload.get("host")
+        port = int(payload.get("port", 0))
+        filename = payload.get("filename", "file.bin")
+        size = int(payload.get("size", 0))
+        conflict_rule = payload.get(
+            "conflict_rule", self.state.session.policy.conflict_rule
+        )
+        if not job_id or not host or not port:
+            self.state.add_log("Transfer offer missing host/port/job.")
+            return
+
+        job = TransferJob(
+            id=job_id,
+            path=filename,
+            direction="download",
+            status="receiving",
+            size=size,
+        )
+        self.state.update_transfer(job)
+        if self.state.session:
+            self.storage.record_transfer(self.state.session.id, job)
+
+        loop = asyncio.get_running_loop()
+        last_bytes = 0
+        last_time = time.monotonic()
+
+        def on_progress(bytes_received: int, total_size: int) -> None:
+            nonlocal last_bytes, last_time
+            now = time.monotonic()
+            delta_bytes = bytes_received - last_bytes
+            delta_time = max(now - last_time, 0.0001)
+            rate_mbps = (delta_bytes / delta_time) / (1024 * 1024)
+            last_bytes = bytes_received
+            last_time = now
+            asyncio.run_coroutine_threadsafe(
+                self.control_client.send(
+                    "TRANSFER_STATUS",
+                    {
+                        "job_id": job_id,
+                        "path": filename,
+                        "status": "receiving",
+                        "progress": bytes_received / total_size if total_size else 1.0,
+                        "checksum": "",
+                        "bytes_copied": bytes_received,
+                        "size": total_size,
+                        "direction": "download",
+                        "rate_mbps": rate_mbps,
+                    },
+                ),
+                loop,
+            )
+
+        result = await asyncio.to_thread(
+            receive_file,
+            host,
+            port,
+            self.hyperbox.inbox,
+            on_progress,
+            conflict_rule,
+        )
+        status = "skipped" if result.skipped else "complete"
+        await self.control_client.send(
+            "TRANSFER_STATUS",
+            {
+                "job_id": job_id,
+                "path": filename,
+                "status": status,
+                "progress": 1.0,
+                "checksum": result.checksum,
+                "bytes_copied": result.bytes_received,
+                "size": result.bytes_received,
+                "direction": "download",
+                "rate_mbps": 0.0,
+            },
         )
 
     def _send_over_network(
