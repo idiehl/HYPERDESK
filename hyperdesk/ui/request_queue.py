@@ -3,9 +3,11 @@ from __future__ import annotations
 from datetime import datetime
 
 import csv
+import time
 
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -13,11 +15,13 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
+from PySide6.QtCore import QTimer
 
 from hyperdesk.core.models import FileRequest
 
@@ -41,6 +45,14 @@ class RequestQueueDialog(QDialog):
         self.search_box.setPlaceholderText("Search file name")
         self.refresh_button = QPushButton("Refresh")
         self.export_button = QPushButton("Export CSV")
+        self.auto_export = QCheckBox("Auto export")
+        self.auto_interval = QSpinBox()
+        self.auto_interval.setRange(1, 120)
+        self.auto_interval.setSuffix(" min")
+        self.auto_path = QLineEdit()
+        self.auto_path.setPlaceholderText("Archive folder (optional)")
+        self.auto_browse = QPushButton("Browse")
+        self._auto_timer = QTimer(self)
 
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("Status:"))
@@ -54,6 +66,10 @@ class RequestQueueDialog(QDialog):
         filter_row.addWidget(self.search_box)
         filter_row.addWidget(self.refresh_button)
         filter_row.addWidget(self.export_button)
+        filter_row.addWidget(self.auto_export)
+        filter_row.addWidget(self.auto_interval)
+        filter_row.addWidget(self.auto_path)
+        filter_row.addWidget(self.auto_browse)
 
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
@@ -74,6 +90,9 @@ class RequestQueueDialog(QDialog):
         self.search_box.textChanged.connect(self.refresh)
         self.refresh_button.clicked.connect(self.refresh)
         self.export_button.clicked.connect(self.export_csv)
+        self.auto_export.toggled.connect(self._toggle_auto_export)
+        self.auto_browse.clicked.connect(self._browse_auto_path)
+        self._auto_timer.timeout.connect(self._auto_export_tick)
 
         self.refresh()
 
@@ -158,6 +177,42 @@ class RequestQueueDialog(QDialog):
         )
         if not path:
             return
+        requests = self._apply_filters(self.controller.get_request_history_all())
+        session_map = self.controller.get_session_index()
+        with open(path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                ["file", "requester", "status", "session_id", "device", "created_at"]
+            )
+            for request in requests:
+                device_name = session_map.get(request.session_id, "Unknown")
+                writer.writerow(
+                    [
+                        request.path,
+                        request.requester,
+                        request.status,
+                        request.session_id,
+                        device_name,
+                        request.created_at.isoformat(),
+                    ]
+                )
+
+    def _toggle_auto_export(self, enabled: bool) -> None:
+        if enabled:
+            self._auto_timer.start(self.auto_interval.value() * 60 * 1000)
+            self._auto_export_tick()
+        else:
+            self._auto_timer.stop()
+
+    def _browse_auto_path(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select export folder")
+        if path:
+            self.auto_path.setText(path)
+
+    def _auto_export_tick(self) -> None:
+        folder = self.auto_path.text().strip() or "."
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        path = f"{folder}/request_queue_{timestamp}.csv"
         requests = self._apply_filters(self.controller.get_request_history_all())
         session_map = self.controller.get_session_index()
         with open(path, "w", newline="", encoding="utf-8") as handle:

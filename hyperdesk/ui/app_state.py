@@ -14,6 +14,7 @@ class AppState(QObject):
     log_added = Signal(str)
     transfers_changed = Signal(list)
     requests_changed = Signal(list)
+    pairing_offer_changed = Signal(object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -23,6 +24,7 @@ class AppState(QObject):
         self.logs: List[str] = []
         self.transfers: List[TransferJob] = []
         self.requests: List[FileRequest] = []
+        self.pairing_offer: Optional[dict] = None
 
     def set_devices(self, devices: List[Device]) -> None:
         self.devices = devices
@@ -35,6 +37,10 @@ class AppState(QObject):
     def set_pairing_code(self, code: str) -> None:
         self.pairing_code = code
         self.pairing_changed.emit(code)
+
+    def set_pairing_offer(self, offer: Optional[dict]) -> None:
+        self.pairing_offer = offer
+        self.pairing_offer_changed.emit(offer)
 
     def add_log(self, message: str) -> None:
         self.logs.append(message)

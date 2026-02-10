@@ -42,6 +42,13 @@ class PairingManager:
         peer_device: Device,
         mode: str = "approval",
         conflict_rule: str = "keep_both",
+        allow_browse: bool = True,
+        allow_requests: bool = True,
+        allow_edits: bool = False,
+        edit_mode: str = "copy_on_edit",
+        allow_client_share: bool = True,
+        session_id: str | None = None,
+        token: str | None = None,
     ) -> Session:
         if pairing.code != code:
             raise ValueError("Invalid pairing code.")
@@ -50,6 +57,13 @@ class PairingManager:
             peer_device,
             mode=mode,
             conflict_rule=conflict_rule,
+            allow_browse=allow_browse,
+            allow_requests=allow_requests,
+            allow_edits=allow_edits,
+            edit_mode=edit_mode,
+            allow_client_share=allow_client_share,
+            session_id=session_id,
+            token=token,
         )
         self._active.pop(pairing.id, None)
         self._active_by_code.pop(pairing.code, None)
@@ -65,11 +79,21 @@ class PairingManager:
         mode: str,
         approval_required: bool,
         conflict_rule: str,
+        allow_browse: bool,
+        allow_requests: bool,
+        allow_edits: bool,
+        edit_mode: str,
+        allow_client_share: bool,
     ) -> Session:
         policy = PermissionPolicy(
             mode=mode,
             approval_required=approval_required,
             conflict_rule=conflict_rule,
+            allow_browse=allow_browse,
+            allow_requests=allow_requests,
+            allow_edits=allow_edits,
+            edit_mode=edit_mode,
+            allow_client_share=allow_client_share,
         )
         return Session(
             id=session.id,
@@ -87,18 +111,30 @@ class PairingManager:
         peer_device: Device,
         mode: str,
         conflict_rule: str,
+        allow_browse: bool,
+        allow_requests: bool,
+        allow_edits: bool,
+        edit_mode: str,
+        allow_client_share: bool,
+        session_id: str | None = None,
+        token: str | None = None,
     ) -> Session:
         policy = PermissionPolicy(
             mode=mode,
             approval_required=(mode == "approval"),
             conflict_rule=conflict_rule,
+            allow_browse=allow_browse,
+            allow_requests=allow_requests,
+            allow_edits=allow_edits,
+            edit_mode=edit_mode,
+            allow_client_share=allow_client_share,
         )
         return Session(
-            id=str(uuid.uuid4()),
+            id=session_id or str(uuid.uuid4()),
             host_device=host_device,
             peer_device=peer_device,
             status="connected",
             policy=policy,
-            token=secrets.token_urlsafe(16),
+            token=token or secrets.token_urlsafe(16),
             created_at=datetime.now(timezone.utc),
         )

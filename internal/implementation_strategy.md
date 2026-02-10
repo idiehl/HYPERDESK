@@ -106,10 +106,13 @@ Completed:
 29. Added request queue CSV export and device preset UI.
 30. Added bandwidth history chart dialog.
 31. Added checksum ack validation for peer transfers.
+32. Added unified host/client UI with pairing offers and confirmations.
+33. Added session configuration presets and client connection panel.
+34. Added request export scheduling and bandwidth history export.
 
 Next:
-1. Add transfer integrity validation on peer (checksum ack) for inbound syncs.
-2. Build a simple peer UI for non-CLI testing.
-3. Add request queue export scheduling (auto archive).
-4. Add bandwidth utilization history export.
-5. Implement conflict resolution behavior for mirror mode on receive side.
+1. Build host file index and client browser view.
+2. Add client revoke UI for shared files.
+3. Implement edit workflow (copy vs in-place).
+4. Add basic peer-side file browser and metadata view.
+5. Add approval flow for client edits with diff preview.

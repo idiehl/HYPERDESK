@@ -45,8 +45,9 @@ class Storage:
         self._execute(
             """
             INSERT OR REPLACE INTO sessions
-            (id, host_device_id, peer_device_id, status, mode, approval_required, conflict_rule, token, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, host_device_id, peer_device_id, status, mode, approval_required, conflict_rule,
+             allow_browse, allow_requests, allow_edits, edit_mode, allow_client_share, token, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session.id,
@@ -56,6 +57,11 @@ class Storage:
                 session.policy.mode,
                 int(session.policy.approval_required),
                 session.policy.conflict_rule,
+                int(session.policy.allow_browse),
+                int(session.policy.allow_requests),
+                int(session.policy.allow_edits),
+                session.policy.edit_mode,
+                int(session.policy.allow_client_share),
                 session.token,
                 session.created_at.isoformat(),
             ),
@@ -247,6 +253,11 @@ class Storage:
                 mode TEXT NOT NULL,
                 approval_required INTEGER NOT NULL,
                 conflict_rule TEXT,
+                allow_browse INTEGER,
+                allow_requests INTEGER,
+                allow_edits INTEGER,
+                edit_mode TEXT,
+                allow_client_share INTEGER,
                 token TEXT,
                 created_at TEXT NOT NULL
             )
@@ -302,6 +313,11 @@ class Storage:
             {
                 "token": "TEXT",
                 "conflict_rule": "TEXT",
+                "allow_browse": "INTEGER",
+                "allow_requests": "INTEGER",
+                "allow_edits": "INTEGER",
+                "edit_mode": "TEXT",
+                "allow_client_share": "INTEGER",
             },
         )
 

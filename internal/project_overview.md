@@ -56,7 +56,7 @@ flowchart LR
 ```
 
 ## Current stage
-MVP scaffold includes a dedicated request queue view with filters/CSV export, approvals tied to transfer jobs, transfer settings UI with enforced throttling, SQLite persistence, hyperbox auto-sync rules with conflict handling, optional mDNS discovery, session tokens and sync rules with device presets, peer client file reception with checksum ack and progress reporting, transfer log footer stats, and a bandwidth history chart.
+MVP scaffold now supports a unified host/client UI with pairing offers, client confirmation, and session configuration presets. It includes request queue filters/CSV export, approvals tied to transfer jobs, transfer settings UI with enforced throttling, SQLite persistence, auto-sync rules with conflict handling, optional mDNS discovery, session tokens, device presets, peer file reception with checksum ack and progress reporting, transfer log footer stats, and a bandwidth history chart.
 
 ## Reference images
 ### Initial concept

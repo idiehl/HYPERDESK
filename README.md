@@ -14,6 +14,7 @@ session-scoped "hyperbox" directory with controlled permissions.
 4. Use `Start Pairing` to generate a peer code.
 5. Use `Sync Rules` to set mode + conflict policy.
 6. Optional: set `HYPERDESK_CONTROL_HOST=0.0.0.0` to accept LAN peers (default).
+7. Use `Connect to Host` on another device to join the session.
 
 ## Run peer client (simulated)
 1. Start the host app and click `Start Pairing` to display a code.
@@ -37,6 +38,9 @@ session-scoped "hyperbox" directory with controlled permissions.
 - Transfer log footer shows active count, avg rate, and throttle utilization.
 - Device presets let you save default sync rules per peer.
 - Request queue can export filtered results to CSV.
+- Session Config sets default host rules before pairing.
+- Client connects via the same UI and confirms host configuration.
+- Host and client use the same app; role is determined per session.
 - Session and audit metadata are stored in `data/hyperdesk.db`.
 - Hyperbox files are stored in `hyperbox/`.
 

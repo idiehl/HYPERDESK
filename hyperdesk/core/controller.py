@@ -2,19 +2,28 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import socket
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from hyperdesk.core.hyperbox import HyperboxManager
-from hyperdesk.core.models import Device, FileRequest, PairingSession, TransferJob
+from hyperdesk.core.models import (
+    Device,
+    FileRequest,
+    PairingSession,
+    PermissionPolicy,
+    Session,
+    TransferJob,
+)
 from hyperdesk.core.requests import RequestQueue
 from hyperdesk.core.storage import Storage
 from hyperdesk.core.watcher import HyperboxWatcher
-from hyperdesk.network.control import ControlServer
+from hyperdesk.network.control import ControlClient, ControlServer
 from hyperdesk.network.discovery import NetworkDiscovery, ZeroconfService
 from hyperdesk.network.pairing import PairingManager
 from hyperdesk.network.protocol import encode_message
@@ -50,12 +59,27 @@ class AppController:
             "max_retries": 3,
             "encryption": False,
         }
+        self._session_defaults = {
+            "mode": "approval",
+            "conflict_rule": "keep_both",
+            "allow_browse": True,
+            "allow_requests": True,
+            "allow_edits": False,
+            "edit_mode": "copy_on_edit",
+            "allow_client_share": True,
+        }
         self._control_loop: Optional[asyncio.AbstractEventLoop] = None
         self._control_thread: Optional[threading.Thread] = None
         self.control_server: Optional[ControlServer] = None
         self.control_host = os.getenv("HYPERDESK_CONTROL_HOST", "0.0.0.0")
         self.control_port = 8765
         self.mdns_service: Optional[ZeroconfService] = None
+        self._client_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._client_thread: Optional[threading.Thread] = None
+        self.control_client: Optional[ControlClient] = None
+        self._client_connected = False
+        self.pending_offer: Optional[dict] = None
+        self.client_offer: Optional[dict] = None
 
         self.storage.record_device(self.local_device)
         if self.discovery.use_mdns:
@@ -82,13 +106,16 @@ class AppController:
         if self.pending_pairing:
             self.state.add_log("Pairing session already active.")
             return
+        if self.pending_offer:
+            self.state.add_log("Pending offer exists. Wait for response or cancel.")
+            return
         pairing = self.pairing.create_pairing(self.local_device)
         self.pending_pairing = pairing
         self.state.set_pairing_code(pairing.code)
         self.state.add_log("Pairing session created. Awaiting peer request.")
 
     def link_to_device(self, device: Device) -> None:
-        mode, conflict_rule = self._get_device_sync_preset(device.id)
+        config = self._resolve_session_config(device.id)
         pairing = self.pairing.create_pairing(self.local_device)
         self.pending_pairing = None
         self.state.set_pairing_code(pairing.code)
@@ -96,8 +123,13 @@ class AppController:
             pairing,
             pairing.code,
             device,
-            mode=mode,
-            conflict_rule=conflict_rule,
+            mode=config["mode"],
+            conflict_rule=config["conflict_rule"],
+            allow_browse=config["allow_browse"],
+            allow_requests=config["allow_requests"],
+            allow_edits=config["allow_edits"],
+            edit_mode=config["edit_mode"],
+            allow_client_share=config["allow_client_share"],
         )
         self.state.set_session(session)
         self.state.set_transfers([])
@@ -112,6 +144,11 @@ class AppController:
             session.policy.mode,
             session.policy.approval_required,
             session.policy.conflict_rule,
+            session.policy.allow_browse,
+            session.policy.allow_requests,
+            session.policy.allow_edits,
+            session.policy.edit_mode,
+            session.policy.allow_client_share,
         )
 
     def disconnect(self) -> None:
@@ -126,7 +163,17 @@ class AppController:
             self.storage.update_session_status(session_id, "disconnected")
             self.storage.record_audit_event(session_id, "session_disconnected", f"Disconnected from {peer}.")
             self.state.add_log(f"Disconnected from {peer}.")
-            self._broadcast_session_update("disconnected", "", False, "keep_both")
+            self._broadcast_session_update(
+                "disconnected",
+                "",
+                False,
+                "keep_both",
+                False,
+                False,
+                False,
+                "copy_on_edit",
+                False,
+            )
 
     def simulate_transfer(self) -> None:
         if not self.state.session:
@@ -154,6 +201,47 @@ class AppController:
         )
         self.state.set_requests(self.requests.list_requests(self.state.session.id))
         self.state.add_log(f"Request queued: {request.path}")
+
+    def share_local_file(self, source_path: Path) -> None:
+        if not self.state.session:
+            self.state.add_log("Link a device before sharing files.")
+            return
+        if not self.state.session.policy.allow_client_share:
+            self.state.add_log("Sharing is disabled for this session.")
+            return
+        if not source_path.exists():
+            self.state.add_log("Selected file does not exist.")
+            return
+        dest_path = self.hyperbox.outbox / source_path.name
+        dest_path = self._apply_conflict_rule(dest_path)
+        if dest_path is None:
+            self.state.add_log("Share skipped due to conflict policy.")
+            return
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, dest_path)
+        self.state.add_log(f"Shared file: {dest_path.name}")
+
+    def request_remote_file(self, path: str) -> None:
+        if not self.state.session:
+            self.state.add_log("Connect to a host before requesting files.")
+            return
+        if not self.state.session.policy.allow_requests:
+            self.state.add_log("Requests are disabled for this session.")
+            return
+        if not self.control_client:
+            self.state.add_log("Client is not connected.")
+            return
+        self.send_client_message(
+            "TRANSFER_REQUEST",
+            {
+                "session_id": self.state.session.id,
+                "path": path,
+                "direction": "download",
+                "size": 0,
+                "requester": self.local_device.name,
+            },
+        )
+        self.state.add_log(f"Requested remote file: {path}")
 
     def approve_request(self, request_id: str) -> None:
         request = self._find_request(request_id)
@@ -224,14 +312,51 @@ class AppController:
     def get_device_sync_preset(self, device_id: str) -> tuple[str, str]:
         return self._get_device_sync_preset(device_id)
 
-    def set_device_sync_preset(self, device_id: str, mode: str, conflict_rule: str) -> None:
-        self._save_device_sync_preset(device_id, mode, conflict_rule)
+    def set_device_sync_preset(
+        self,
+        device_id: str,
+        mode: str,
+        conflict_rule: str,
+        allow_browse: bool,
+        allow_requests: bool,
+        allow_edits: bool,
+        edit_mode: str,
+        allow_client_share: bool,
+    ) -> None:
+        self._save_device_sync_preset(
+            device_id,
+            mode,
+            conflict_rule,
+            allow_browse,
+            allow_requests,
+            allow_edits,
+            edit_mode,
+            allow_client_share,
+        )
         if self.state.session and self.state.session.peer_device.id == device_id:
-            self.update_sync_rules(mode, conflict_rule)
+            policy = self.state.session.policy
+            self.update_sync_rules(
+                mode,
+                conflict_rule,
+                allow_browse,
+                allow_requests,
+                allow_edits,
+                edit_mode,
+                allow_client_share,
+            )
         else:
             self.state.add_log(f"Saved sync preset for device {device_id[:8]}.")
 
-    def update_sync_rules(self, mode: str, conflict_rule: str) -> None:
+    def update_sync_rules(
+        self,
+        mode: str,
+        conflict_rule: str,
+        allow_browse: bool,
+        allow_requests: bool,
+        allow_edits: bool,
+        edit_mode: str,
+        allow_client_share: bool,
+    ) -> None:
         if not self.state.session:
             self.state.add_log("No active session to update sync rules.")
             return
@@ -242,10 +367,24 @@ class AppController:
             mode,
             approval_required,
             conflict_rule,
+            allow_browse,
+            allow_requests,
+            allow_edits,
+            edit_mode,
+            allow_client_share,
         )
         self.state.set_session(updated)
         self.storage.record_session(updated)
-        self._save_device_sync_preset(updated.peer_device.id, mode, conflict_rule)
+        self._save_device_sync_preset(
+            updated.peer_device.id,
+            mode,
+            conflict_rule,
+            allow_browse,
+            allow_requests,
+            allow_edits,
+            edit_mode,
+            allow_client_share,
+        )
         self.state.add_log(
             f"Sync rules updated: mode={mode}, conflict={conflict_rule}."
         )
@@ -254,6 +393,11 @@ class AppController:
             updated.policy.mode,
             updated.policy.approval_required,
             updated.policy.conflict_rule,
+            updated.policy.allow_browse,
+            updated.policy.allow_requests,
+            updated.policy.allow_edits,
+            updated.policy.edit_mode,
+            updated.policy.allow_client_share,
         )
 
     def _resolve_request_source(self, request: FileRequest) -> Path | None:
@@ -284,12 +428,98 @@ class AppController:
         self._control_thread = threading.Thread(target=runner, daemon=True)
         self._control_thread.start()
 
+    def connect_to_host(self, host: str, port: int, pair_code: str) -> None:
+        if self._client_thread:
+            self.state.add_log("Client already connected.")
+            return
+
+        def runner() -> None:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self._client_loop = loop
+            loop.run_until_complete(self._run_client(host, port, pair_code))
+
+        self._client_thread = threading.Thread(target=runner, daemon=True)
+        self._client_thread.start()
+
+    async def _run_client(self, host: str, port: int, pair_code: str) -> None:
+        self.control_client = ControlClient(f"ws://{host}:{port}")
+        try:
+            await self.control_client.connect()
+            self._client_connected = True
+            self.state.add_log(f"Connected to host {host}:{port}.")
+            await self.control_client.send(
+                "PAIRING_REQUEST",
+                {
+                    "device_id": self.local_device.id,
+                    "pair_code": pair_code,
+                    "device_name": self.local_device.name,
+                    "device_ip": self.local_device.ip,
+                    "capabilities": self.local_device.capabilities,
+                },
+            )
+            while True:
+                message = await self.control_client.recv()
+                await self._handle_control_message(message)
+        except Exception as exc:
+            self.state.add_log(f"Client connection error: {exc}")
+        finally:
+            self._client_connected = False
+            if self.control_client:
+                try:
+                    await self.control_client.disconnect()
+                except Exception:
+                    pass
+            self.control_client = None
+            self._client_thread = None
+            self._client_loop = None
+
+    def send_client_message(self, message_type: str, payload: dict) -> None:
+        if not self.control_client or not self._client_loop:
+            self.state.add_log("Client is not connected.")
+            return
+        asyncio.run_coroutine_threadsafe(
+            self.control_client.send(message_type, payload), self._client_loop
+        )
+
+    def disconnect_client(self) -> None:
+        if self.control_client and self._client_loop:
+            asyncio.run_coroutine_threadsafe(
+                self.control_client.disconnect(), self._client_loop
+            )
+
+    def accept_pairing_offer(self) -> None:
+        if not self.client_offer:
+            return
+        self.send_client_message(
+            "PAIRING_CONFIRM",
+            {
+                "session_id": self.client_offer["session_id"],
+                "device_id": self.local_device.id,
+            },
+        )
+        self.state.set_pairing_offer(None)
+
+    def decline_pairing_offer(self) -> None:
+        if not self.client_offer:
+            return
+        self.send_client_message(
+            "PAIRING_DECLINE",
+            {
+                "session_id": self.client_offer["session_id"],
+                "device_id": self.local_device.id,
+            },
+        )
+        self.client_offer = None
+        self.state.set_pairing_offer(None)
+
     def shutdown(self) -> None:
         self._closing = True
         try:
             self.watcher.stop()
         except Exception:
             pass
+        self.disconnect_client()
         if self.mdns_service:
             try:
                 self.mdns_service.stop()
@@ -319,14 +549,57 @@ class AppController:
                 self.state.add_log("No active pairing session found for code.")
                 return
             peer_device = self._build_peer_device(payload)
-            mode, conflict_rule = self._get_device_sync_preset(peer_device.id)
+            config = self._resolve_session_config(peer_device.id)
+            offer = self._build_pairing_offer(peer_device, pairing, config)
+            self.pending_offer = offer
+            self.state.add_log(f"Pairing offer sent to {peer_device.name}.")
+            self._broadcast_pairing_offer(offer)
+        elif message_type == "PAIRING_OFFER":
+            offer = {
+                "session_id": payload.get("session_id"),
+                "host_id": payload.get("host_id"),
+                "host_name": payload.get("host_name"),
+                "host_ip": payload.get("host_ip"),
+                "mode": payload.get("mode"),
+                "approval_required": payload.get("approval_required"),
+                "conflict_rule": payload.get("conflict_rule"),
+                "allow_browse": payload.get("allow_browse"),
+                "allow_requests": payload.get("allow_requests"),
+                "allow_edits": payload.get("allow_edits"),
+                "edit_mode": payload.get("edit_mode"),
+                "allow_client_share": payload.get("allow_client_share"),
+            }
+            self.client_offer = offer
+            self.state.set_pairing_offer(offer)
+            self.state.add_log(f"Pairing offer received from {offer['host_name']}.")
+        elif message_type == "PAIRING_CONFIRM":
+            if not self.pending_offer:
+                self.state.add_log("No pending offer to confirm.")
+                return
+            session_id = payload.get("session_id")
+            device_id = payload.get("device_id")
+            if session_id != self.pending_offer["session_id"]:
+                self.state.add_log("Pairing confirm does not match pending offer.")
+                return
+            peer_device = self.pending_offer["peer_device"]
+            config = self.pending_offer["config"]
+            pairing = self.pending_offer["pairing"]
+            token = self.pending_offer["token"]
             session = self.pairing.confirm_pairing(
                 pairing,
-                code,
+                pairing.code,
                 peer_device,
-                mode=mode,
-                conflict_rule=conflict_rule,
+                mode=config["mode"],
+                conflict_rule=config["conflict_rule"],
+                allow_browse=config["allow_browse"],
+                allow_requests=config["allow_requests"],
+                allow_edits=config["allow_edits"],
+                edit_mode=config["edit_mode"],
+                allow_client_share=config["allow_client_share"],
+                session_id=session_id,
+                token=token,
             )
+            self.pending_offer = None
             self.pending_pairing = None
             self.state.set_session(session)
             self.state.set_pairing_code("")
@@ -337,14 +610,59 @@ class AppController:
                 session.id, "session_linked", f"Linked to {peer_device.name}."
             )
             self.state.set_requests(self.requests.list_requests(session.id))
-            self.state.add_log(f"Peer linked: {peer_device.name}.")
+            self.state.add_log(f"Peer confirmed: {peer_device.name}.")
             self._broadcast_pairing_accept(session)
             self._broadcast_session_update(
                 session.status,
                 session.policy.mode,
                 session.policy.approval_required,
                 session.policy.conflict_rule,
+                session.policy.allow_browse,
+                session.policy.allow_requests,
+                session.policy.allow_edits,
+                session.policy.edit_mode,
+                session.policy.allow_client_share,
             )
+        elif message_type == "PAIRING_DECLINE":
+            self.pending_offer = None
+            self.state.add_log("Peer declined pairing request.")
+        elif message_type == "PAIRING_ACCEPT":
+            if not self.client_offer:
+                return
+            session_id = payload.get("session_id")
+            session_token = payload.get("session_token")
+            host_device = Device(
+                id=self.client_offer["host_id"],
+                name=self.client_offer["host_name"],
+                ip=self.client_offer["host_ip"],
+                status="online",
+                capabilities=["hyperbox"],
+            )
+            policy = PermissionPolicy(
+                mode=self.client_offer["mode"],
+                approval_required=self.client_offer["approval_required"],
+                conflict_rule=self.client_offer["conflict_rule"],
+                allow_browse=self.client_offer["allow_browse"],
+                allow_requests=self.client_offer["allow_requests"],
+                allow_edits=self.client_offer["allow_edits"],
+                edit_mode=self.client_offer["edit_mode"],
+                allow_client_share=self.client_offer["allow_client_share"],
+            )
+            session = Session(
+                id=session_id,
+                host_device=host_device,
+                peer_device=self.local_device,
+                status="connected",
+                policy=policy,
+                token=session_token,
+                created_at=datetime.now(timezone.utc),
+            )
+            self.state.set_session(session)
+            self.state.set_pairing_offer(None)
+            self.client_offer = None
+            self.storage.record_device(host_device)
+            self.storage.record_session(session)
+            self.state.add_log("Session established with host.")
         elif message_type == "SESSION_UPDATE" and self.state.session:
             status = payload.get("status", self.state.session.status)
             mode = payload.get("mode", self.state.session.policy.mode)
@@ -354,12 +672,32 @@ class AppController:
             conflict_rule = payload.get(
                 "conflict_rule", self.state.session.policy.conflict_rule
             )
+            allow_browse = payload.get(
+                "allow_browse", self.state.session.policy.allow_browse
+            )
+            allow_requests = payload.get(
+                "allow_requests", self.state.session.policy.allow_requests
+            )
+            allow_edits = payload.get(
+                "allow_edits", self.state.session.policy.allow_edits
+            )
+            edit_mode = payload.get(
+                "edit_mode", self.state.session.policy.edit_mode
+            )
+            allow_client_share = payload.get(
+                "allow_client_share", self.state.session.policy.allow_client_share
+            )
             updated = self.pairing.update_session(
                 self.state.session,
                 status,
                 mode,
                 approval_required,
                 conflict_rule,
+                allow_browse,
+                allow_requests,
+                allow_edits,
+                edit_mode,
+                allow_client_share,
             )
             self.state.set_session(updated)
             self.storage.record_session(updated)
@@ -389,6 +727,9 @@ class AppController:
             if job.checksum and job.status == "complete":
                 self._record_peer_checksum(job_id, job.checksum)
         elif message_type == "TRANSFER_REQUEST" and self.state.session:
+            if not self.state.session.policy.allow_requests:
+                self.state.add_log("Transfer request denied by policy.")
+                return
             path = payload.get("path", "")
             requester = payload.get("requester", "peer")
             request = self.requests.create_request(self.state.session.id, path, requester)
@@ -601,6 +942,11 @@ class AppController:
         mode: str,
         approval_required: bool,
         conflict_rule: str,
+        allow_browse: bool,
+        allow_requests: bool,
+        allow_edits: bool,
+        edit_mode: str,
+        allow_client_share: bool,
     ) -> None:
         if not self.control_server or not self._control_loop or not self.state.session:
             return
@@ -610,6 +956,11 @@ class AppController:
             "mode": mode,
             "approval_required": approval_required,
             "conflict_rule": conflict_rule,
+            "allow_browse": allow_browse,
+            "allow_requests": allow_requests,
+            "allow_edits": allow_edits,
+            "edit_mode": edit_mode,
+            "allow_client_share": allow_client_share,
         }
         message = encode_message("SESSION_UPDATE", payload)
         asyncio.run_coroutine_threadsafe(
@@ -625,6 +976,29 @@ class AppController:
             "session_token": session.token,
         }
         message = encode_message("PAIRING_ACCEPT", payload)
+        asyncio.run_coroutine_threadsafe(
+            self.control_server.broadcast(message), self._control_loop
+        )
+
+    def _broadcast_pairing_offer(self, offer: dict) -> None:
+        if not self.control_server or not self._control_loop:
+            return
+        config = offer["config"]
+        payload = {
+            "session_id": offer["session_id"],
+            "host_id": offer["host_id"],
+            "host_name": offer["host_name"],
+            "host_ip": offer["host_ip"],
+            "mode": config["mode"],
+            "approval_required": config["mode"] == "approval",
+            "conflict_rule": config["conflict_rule"],
+            "allow_browse": config["allow_browse"],
+            "allow_requests": config["allow_requests"],
+            "allow_edits": config["allow_edits"],
+            "edit_mode": config["edit_mode"],
+            "allow_client_share": config["allow_client_share"],
+        }
+        message = encode_message("PAIRING_OFFER", payload)
         asyncio.run_coroutine_threadsafe(
             self.control_server.broadcast(message), self._control_loop
         )
@@ -746,17 +1120,67 @@ class AppController:
             )
 
     def _get_device_sync_preset(self, device_id: str) -> tuple[str, str]:
+        defaults = self.get_default_session_config()
         mode = self.storage.get_preference(
-            f"device.{device_id}.sync_mode", "approval"
+            f"device.{device_id}.sync_mode", defaults["mode"]
         )
         conflict_rule = self.storage.get_preference(
-            f"device.{device_id}.conflict_rule", "keep_both"
+            f"device.{device_id}.conflict_rule", defaults["conflict_rule"]
         )
-        return mode, conflict_rule
+        allow_browse = self.storage.get_preference(
+            f"device.{device_id}.allow_browse", str(defaults["allow_browse"])
+        ) in ("True", "true", "1")
+        allow_requests = self.storage.get_preference(
+            f"device.{device_id}.allow_requests", str(defaults["allow_requests"])
+        ) in ("True", "true", "1")
+        allow_edits = self.storage.get_preference(
+            f"device.{device_id}.allow_edits", str(defaults["allow_edits"])
+        ) in ("True", "true", "1")
+        edit_mode = self.storage.get_preference(
+            f"device.{device_id}.edit_mode", defaults["edit_mode"]
+        )
+        allow_client_share = self.storage.get_preference(
+            f"device.{device_id}.allow_client_share",
+            str(defaults["allow_client_share"]),
+        ) in ("True", "true", "1")
+        return {
+            "mode": mode,
+            "conflict_rule": conflict_rule,
+            "allow_browse": allow_browse,
+            "allow_requests": allow_requests,
+            "allow_edits": allow_edits,
+            "edit_mode": edit_mode,
+            "allow_client_share": allow_client_share,
+        }
 
-    def _save_device_sync_preset(self, device_id: str, mode: str, conflict_rule: str) -> None:
+    def _save_device_sync_preset(
+        self,
+        device_id: str,
+        mode: str,
+        conflict_rule: str,
+        allow_browse: bool,
+        allow_requests: bool,
+        allow_edits: bool,
+        edit_mode: str,
+        allow_client_share: bool,
+    ) -> None:
         self.storage.set_preference(f"device.{device_id}.sync_mode", mode)
         self.storage.set_preference(f"device.{device_id}.conflict_rule", conflict_rule)
+        self.storage.set_preference(
+            f"device.{device_id}.allow_browse", str(allow_browse)
+        )
+        self.storage.set_preference(
+            f"device.{device_id}.allow_requests", str(allow_requests)
+        )
+        self.storage.set_preference(
+            f"device.{device_id}.allow_edits", str(allow_edits)
+        )
+        self.storage.set_preference(
+            f"device.{device_id}.edit_mode", edit_mode
+        )
+        self.storage.set_preference(
+            f"device.{device_id}.allow_client_share", str(allow_client_share)
+        )
 
     def _build_peer_device(self, payload: dict) -> Device:
         device_id = payload.get("device_id", str(uuid.uuid4()))
@@ -772,6 +1196,30 @@ class AppController:
             status="online",
             capabilities=capabilities,
         )
+
+    def _resolve_session_config(self, device_id: str | None = None) -> dict:
+        config = self.get_default_session_config()
+        if device_id:
+            preset = self._get_device_sync_preset(device_id)
+            config.update(preset)
+        return config
+
+    def _build_pairing_offer(
+        self,
+        peer_device: Device,
+        pairing: PairingSession,
+        config: dict,
+    ) -> dict:
+        return {
+            "session_id": str(uuid.uuid4()),
+            "host_id": self.local_device.id,
+            "host_name": self.local_device.name,
+            "host_ip": self.local_device.ip,
+            "peer_device": peer_device,
+            "pairing": pairing,
+            "config": config,
+            "token": uuid.uuid4().hex,
+        }
 
     def _apply_conflict_rule(self, dest_path: Path) -> Path | None:
         if not self.state.session:
@@ -822,6 +1270,53 @@ class AppController:
         if not limit_bytes:
             return None
         return limit_bytes / (1024 * 1024)
+
+    def get_default_session_config(self) -> dict:
+        config = dict(self._session_defaults)
+        config["mode"] = self.storage.get_preference(
+            "session.default.mode", config["mode"]
+        )
+        config["conflict_rule"] = self.storage.get_preference(
+            "session.default.conflict_rule", config["conflict_rule"]
+        )
+        config["allow_browse"] = self.storage.get_preference(
+            "session.default.allow_browse", str(config["allow_browse"])
+        ) in ("True", "true", "1")
+        config["allow_requests"] = self.storage.get_preference(
+            "session.default.allow_requests", str(config["allow_requests"])
+        ) in ("True", "true", "1")
+        config["allow_edits"] = self.storage.get_preference(
+            "session.default.allow_edits", str(config["allow_edits"])
+        ) in ("True", "true", "1")
+        config["edit_mode"] = self.storage.get_preference(
+            "session.default.edit_mode", config["edit_mode"]
+        )
+        config["allow_client_share"] = self.storage.get_preference(
+            "session.default.allow_client_share", str(config["allow_client_share"])
+        ) in ("True", "true", "1")
+        return config
+
+    def save_default_session_config(self, config: dict) -> None:
+        self.storage.set_preference("session.default.mode", config["mode"])
+        self.storage.set_preference(
+            "session.default.conflict_rule", config["conflict_rule"]
+        )
+        self.storage.set_preference(
+            "session.default.allow_browse", str(config["allow_browse"])
+        )
+        self.storage.set_preference(
+            "session.default.allow_requests", str(config["allow_requests"])
+        )
+        self.storage.set_preference(
+            "session.default.allow_edits", str(config["allow_edits"])
+        )
+        self.storage.set_preference(
+            "session.default.edit_mode", config["edit_mode"]
+        )
+        self.storage.set_preference(
+            "session.default.allow_client_share", str(config["allow_client_share"])
+        )
+        self.state.add_log("Default session configuration saved.")
 
     def record_bandwidth_sample(self, avg_rate_mbps: float, limit_mbps: float | None) -> None:
         now = time.time()

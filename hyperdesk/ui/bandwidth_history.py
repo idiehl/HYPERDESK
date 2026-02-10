@@ -2,7 +2,16 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from PySide6.QtWidgets import QDialog, QTableWidget, QTableWidgetItem, QVBoxLayout
+import csv
+
+from PySide6.QtWidgets import (
+    QDialog,
+    QFileDialog,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+)
 
 try:
     from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
@@ -29,6 +38,9 @@ class BandwidthHistoryDialog(QDialog):
         else:
             table = _build_table(history)
             layout.addWidget(table)
+        export_button = QPushButton("Export CSV")
+        export_button.clicked.connect(lambda: _export_csv(self.controller, history))
+        layout.addWidget(export_button)
         self.setLayout(layout)
 
 
@@ -67,3 +79,19 @@ def _build_table(history: list[tuple[float, float, float | None]]) -> QTableWidg
         table.setItem(row, 1, QTableWidgetItem(f"{rate:.2f}"))
         table.setItem(row, 2, QTableWidgetItem(f"{limit:.2f}" if limit else "--"))
     return table
+
+
+def _export_csv(controller, history: list[tuple[float, float, float | None]]) -> None:
+    path, _ = QFileDialog.getSaveFileName(
+        None,
+        "Export bandwidth history",
+        "bandwidth_history.csv",
+        "CSV Files (*.csv)",
+    )
+    if not path:
+        return
+    with open(path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["timestamp", "avg_rate_mbps", "limit_mbps"])
+        for timestamp, rate, limit in history:
+            writer.writerow([timestamp, f"{rate:.4f}", f"{limit:.4f}" if limit else ""])

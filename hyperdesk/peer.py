@@ -44,7 +44,18 @@ async def run_peer(
         message_type = message.get("type")
         payload = message.get("payload", {})
         print(f"[peer] Received: {message_type}")
-        if message_type == "PAIRING_ACCEPT":
+        if message_type == "PAIRING_OFFER":
+            session_id = payload.get("session_id")
+            host_name = payload.get("host_name")
+            print(f"[peer] Offer from {host_name}. Accepting...")
+            await client.send(
+                "PAIRING_CONFIRM",
+                {
+                    "session_id": session_id,
+                    "device_id": device_id,
+                },
+            )
+        elif message_type == "PAIRING_ACCEPT":
             session_id = payload.get("session_id")
             session_token = payload.get("session_token")
             print(f"[peer] Session active: {session_id} token={session_token[:8]}...")

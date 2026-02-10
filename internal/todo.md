@@ -1,15 +1,12 @@
 # HYPERDESK To-Do
 
 ## Now
-- [ ] Add transfer integrity validation on peer for inbound syncs
-- [ ] Build a simple peer UI for non-CLI testing
-- [ ] Add request queue export scheduling (auto archive)
-- [ ] Add bandwidth utilization history export
-- [ ] Implement conflict resolution behavior for mirror mode on receive side
+- [ ] Build host file index + client browser view
+- [ ] Add client revoke UI for shared files
+- [ ] Implement edit workflow (copy vs in-place)
 - [ ] Build wireframe screens into a clickable prototype
 
 ## Soon
-- [ ] Build a dedicated request queue view with filters/history
 - [ ] OS integration: context menu "Send to HYPERDESK"
 - [ ] Expand pairing to real handshake over control channel
 
@@ -57,3 +54,8 @@
 - [x] Persist sync rule presets per device (UI for defaults)
 - [x] Add request queue export to CSV
 - [x] Add bandwidth utilization history chart
+- [x] Build a simple peer UI for non-CLI testing
+- [x] Add request queue export scheduling (auto archive)
+- [x] Add bandwidth utilization history export
+- [x] Implement conflict resolution behavior for mirror mode on receive side
+- [x] Add transfer integrity validation on peer for inbound syncs

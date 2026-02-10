@@ -19,6 +19,11 @@ class PermissionPolicy:
     mode: str
     approval_required: bool
     conflict_rule: str = "keep_both"
+    allow_browse: bool = True
+    allow_requests: bool = True
+    allow_edits: bool = False
+    edit_mode: str = "copy_on_edit"
+    allow_client_share: bool = True
 
 
 @dataclass(frozen=True)

@@ -11,13 +11,12 @@ from PySide6.QtWidgets import (
 )
 
 
-class DevicePresetsDialog(QDialog):
+class SessionConfigDialog(QDialog):
     def __init__(self, controller, parent=None) -> None:
         super().__init__(parent)
         self.controller = controller
-        self.setWindowTitle("Device Sync Presets")
+        self.setWindowTitle("Session Configuration (Host)")
 
-        self.device_selector = QComboBox()
         self.mode = QComboBox()
         self.mode.addItems(["mirror", "copy", "approval"])
 
@@ -32,10 +31,9 @@ class DevicePresetsDialog(QDialog):
         self.edit_mode = QComboBox()
         self.edit_mode.addItems(["copy_on_edit", "in_place"])
 
-        self._load_devices()
+        self._load()
 
         form = QFormLayout()
-        form.addRow("Device:", self.device_selector)
         form.addRow("Mode:", self.mode)
         form.addRow("Conflict rule:", self.conflict_rule)
         form.addRow(self.allow_browse)
@@ -45,38 +43,24 @@ class DevicePresetsDialog(QDialog):
         form.addRow(self.allow_client_share)
 
         save_button = QPushButton("Save")
-        close_button = QPushButton("Close")
+        cancel_button = QPushButton("Cancel")
         save_button.clicked.connect(self._save)
-        close_button.clicked.connect(self.reject)
+        cancel_button.clicked.connect(self.reject)
 
         buttons = QHBoxLayout()
         buttons.addStretch()
         buttons.addWidget(save_button)
-        buttons.addWidget(close_button)
+        buttons.addWidget(cancel_button)
 
         layout = QVBoxLayout()
         layout.addLayout(form)
         layout.addLayout(buttons)
         self.setLayout(layout)
 
-        self.device_selector.currentIndexChanged.connect(self._load_preset)
-        self._load_preset()
-
-    def _load_devices(self) -> None:
-        self.device_selector.clear()
-        devices = self.controller.list_devices()
-        for device in devices:
-            label = f"{device['name']} ({device['ip']})"
-            self.device_selector.addItem(label, device["id"])
-
-    def _load_preset(self) -> None:
-        device_id = self.device_selector.currentData()
-        if not device_id:
-            return
-        config = self.controller.get_device_sync_preset(device_id)
-        mode, conflict_rule = config["mode"], config["conflict_rule"]
-        self.mode.setCurrentText(mode)
-        self.conflict_rule.setCurrentText(conflict_rule)
+    def _load(self) -> None:
+        config = self.controller.get_default_session_config()
+        self.mode.setCurrentText(config["mode"])
+        self.conflict_rule.setCurrentText(config["conflict_rule"])
         self.allow_browse.setChecked(config["allow_browse"])
         self.allow_requests.setChecked(config["allow_requests"])
         self.allow_edits.setChecked(config["allow_edits"])
@@ -84,16 +68,14 @@ class DevicePresetsDialog(QDialog):
         self.allow_client_share.setChecked(config["allow_client_share"])
 
     def _save(self) -> None:
-        device_id = self.device_selector.currentData()
-        if not device_id:
-            return
-        self.controller.set_device_sync_preset(
-            device_id,
-            self.mode.currentText(),
-            self.conflict_rule.currentText(),
-            self.allow_browse.isChecked(),
-            self.allow_requests.isChecked(),
-            self.allow_edits.isChecked(),
-            self.edit_mode.currentText(),
-            self.allow_client_share.isChecked(),
-        )
+        config = {
+            "mode": self.mode.currentText(),
+            "conflict_rule": self.conflict_rule.currentText(),
+            "allow_browse": self.allow_browse.isChecked(),
+            "allow_requests": self.allow_requests.isChecked(),
+            "allow_edits": self.allow_edits.isChecked(),
+            "edit_mode": self.edit_mode.currentText(),
+            "allow_client_share": self.allow_client_share.isChecked(),
+        }
+        self.controller.save_default_session_config(config)
+        self.accept()

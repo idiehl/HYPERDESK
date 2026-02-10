@@ -269,3 +269,32 @@ Commands used:
 
 New methods, variables, classes, or modules:
 - `DevicePresetsDialog` and `BandwidthHistoryDialog`.
+
+## 2026-02-06 (Unified Host/Client UI)
+Task summary:
+- Added client connection panel and pairing offer confirmation dialog.
+- Added session configuration defaults and access policy fields.
+- Implemented request/export scheduling and bandwidth history export.
+- Added share/request actions and access gating based on policy.
+
+Relevant files and directories:
+- i:\HYPERDESK\hyperdesk\ui\main_window.py
+- i:\HYPERDESK\hyperdesk\ui\pairing_offer.py
+- i:\HYPERDESK\hyperdesk\ui\session_config.py
+- i:\HYPERDESK\hyperdesk\ui\sync_rules.py
+- i:\HYPERDESK\hyperdesk\ui\request_queue.py
+- i:\HYPERDESK\hyperdesk\ui\bandwidth_history.py
+- i:\HYPERDESK\hyperdesk\core\controller.py
+- i:\HYPERDESK\hyperdesk\network\protocol.py
+- i:\HYPERDESK\hyperdesk\network\pairing.py
+- i:\HYPERDESK\hyperdesk\core\storage.py
+- i:\HYPERDESK\README.md
+- i:\HYPERDESK\internal\project_overview.md
+- i:\HYPERDESK\internal\implementation_strategy.md
+- i:\HYPERDESK\internal\todo.md
+
+Commands used:
+- None
+
+New methods, variables, classes, or modules:
+- Pairing offer workflow and client connection UI.
