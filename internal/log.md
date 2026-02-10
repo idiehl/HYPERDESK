@@ -298,3 +298,18 @@ Commands used:
 
 New methods, variables, classes, or modules:
 - Pairing offer workflow and client connection UI.
+
+## 2026-02-06 (Install + Live Session Guide)
+Task summary:
+- Provided step-by-step install and run instructions for two devices.
+- Clarified current live session capabilities and limitations for file sharing.
+
+Relevant files and directories:
+- i:\HYPERDESK\README.md
+- i:\HYPERDESK\internal\log.md
+
+Commands used:
+- None
+
+New methods, variables, classes, or modules:
+- None (documentation guidance only)
